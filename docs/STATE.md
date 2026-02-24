@@ -5,7 +5,7 @@ Current state of the bolt-rendezvous repository.
 ## Current Version
 
 **Tag:** `rendezvous-v0.1.1-room-lifecycle-tests`
-**Commit:** *pending*
+**Commit:** `af764f3`
 **Branch:** `main`
 **Crate:** `bolt-rendezvous` v0.1.1
 
