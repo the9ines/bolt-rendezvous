@@ -4,10 +4,11 @@ Current state of the bolt-rendezvous repository.
 
 ## Current Version
 
-**Tag:** `rendezvous-v0.1.1-room-lifecycle-tests`
-**Commit:** `af764f3`
+**Tag:** `rendezvous-protocol-v0.1.0`
+**Commit:** `121145c`
 **Branch:** `main`
 **Crate:** `bolt-rendezvous` v0.1.1
+**Subcrate:** `bolt-rendezvous-protocol` v0.1.0
 
 ## Purpose
 
@@ -21,7 +22,8 @@ messages between them.
 |------|--------|
 | Signaling server (`src/lib.rs`) | Complete |
 | Connection handler (`src/server.rs`) | Complete (with trust boundary limits) |
-| Protocol types (`src/protocol.rs`) | Complete |
+| Protocol types (`src/protocol.rs`) | Complete (re-exports from `bolt-rendezvous-protocol`) |
+| Protocol subcrate (`protocol/`) | **Complete** (Phase A2 — canonical types, 16 tests) |
 | Room manager (`src/room.rs`) | Complete |
 | Trust boundary enforcement | **Complete** (Phase 6A.4) |
 
@@ -40,7 +42,8 @@ messages between them.
 
 - 45 unit tests (7 protocol + 21 server trust boundary + 17 room lifecycle)
 - 1 doc-test
-- Total: 46
+- Protocol subcrate: 16 tests (8 wire-compat + 5 deser + 1 DeviceType + 2 Clone)
+- Total: 62
 
 ## Phase Status
 
@@ -50,3 +53,4 @@ messages between them.
 | Phase 4B | Signaling-only clarification | Complete |
 | Phase 6A.4 | Trust boundary hardening | **Complete** |
 | Phase 8B.2 | Room/peer lifecycle test coverage | **Complete** (17 tests: add/remove/find, broadcast, concurrent edge, isolation) |
+| Phase A2 | Signaling type deduplication | **Complete** (protocol subcrate extracted, consumed by bolt-daemon via git tag dep) |

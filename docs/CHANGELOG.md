@@ -2,6 +2,44 @@
 
 All notable changes to bolt-rendezvous are documented here. Newest first.
 
+## [rendezvous-protocol-v0.1.0] - 2026-02-24
+
+Phase A2: Signaling Type Deduplication.
+
+Extracts canonical protocol types (`ClientMessage`, `ServerMessage`,
+`PeerData`, `DeviceType`) into `bolt-rendezvous-protocol` v0.1.0
+subcrate (`protocol/`). Replaces manual `Clone` and `Deserialize`
+impls in `room.rs` with derived traits. Both `Serialize` and
+`Deserialize` derived on all types, enabling consumption by
+both server (bolt-rendezvous) and client (bolt-daemon).
+
+### Added
+- `protocol/Cargo.toml` — `bolt-rendezvous-protocol` v0.1.0 crate.
+  Dependencies: `serde` + `serde_json` only.
+- `protocol/src/lib.rs` — canonical types with `Debug`, `Clone`,
+  `Serialize`, `Deserialize` derives. 16 tests (8 wire-compat
+  via `serde_json::Value` equality, 5 deser roundtrip, 1 DeviceType
+  variants, 2 Clone).
+- `protocol/.gitignore` — build artifacts.
+
+### Changed
+- `Cargo.toml` — added path dependency on `bolt-rendezvous-protocol`.
+- `src/protocol.rs` — replaced type definitions with
+  `pub use bolt_rendezvous_protocol::*;`.
+- `src/room.rs` — removed manual `Deserialize` and `Clone` impls
+  for `ServerMessage` (now derived).
+
+### Consumers
+- bolt-rendezvous: path dep (same repo).
+- bolt-daemon: git dep pinned to `rendezvous-protocol-v0.1.0` tag.
+
+### Tests
+- Protocol subcrate: 16 tests.
+- Main crate: 45 unit + 1 doc-test = 46 (unchanged).
+- Total: 62.
+
+**Commit:** `68befd7` (feature), `121145c` (merge to main)
+
 ## [rendezvous-v0.1.1-room-lifecycle-tests] - 2026-02-23
 
 Phase 8B.2: Room/peer lifecycle unit coverage.
