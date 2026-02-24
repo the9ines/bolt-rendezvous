@@ -4,10 +4,10 @@ Current state of the bolt-rendezvous repository.
 
 ## Current Version
 
-**Tag:** `rendezvous-v0.0.5-trust-boundary`
-**Commit:** `a8ff762`
+**Tag:** `rendezvous-v0.1.1-room-lifecycle-tests`
+**Commit:** *pending*
 **Branch:** `main`
-**Crate:** `bolt-rendezvous` v0.1.0
+**Crate:** `bolt-rendezvous` v0.1.1
 
 ## Purpose
 
@@ -38,9 +38,9 @@ messages between them.
 
 ## Test Summary
 
-- 28 unit tests (7 protocol + 21 server trust boundary)
+- 45 unit tests (7 protocol + 21 server trust boundary + 17 room lifecycle)
 - 1 doc-test
-- Total: 29
+- Total: 46
 
 ## Phase Status
 
@@ -49,3 +49,4 @@ messages between them.
 | Initial | Signaling server skeleton | Complete |
 | Phase 4B | Signaling-only clarification | Complete |
 | Phase 6A.4 | Trust boundary hardening | **Complete** |
+| Phase 8B.2 | Room/peer lifecycle test coverage | **Complete** (17 tests: add/remove/find, broadcast, concurrent edge, isolation) |

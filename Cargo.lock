@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "bolt-rendezvous"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dashmap",
  "futures-util",

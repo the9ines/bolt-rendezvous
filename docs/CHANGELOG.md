@@ -2,6 +2,44 @@
 
 All notable changes to bolt-rendezvous are documented here. Newest first.
 
+## [rendezvous-v0.1.1-room-lifecycle-tests] - 2026-02-23
+
+Phase 8B.2: Room/peer lifecycle unit coverage.
+
+Adds 17 unit tests for RoomManager in `room.rs`. No production code
+changes. Tests cover add_peer (insertion, return value, duplicate
+rejection, cross-room same code, PeerJoined broadcast), remove_peer
+(removal, empty-room cleanup, PeerLeft broadcast, nonexistent peer/room),
+find_peer (found, absent, cross-room scan), concurrent edge simulation
+(A disconnect doesn't affect B, multi-room isolation), and invalid
+room access (nonexistent room returns empty, empty manager counts).
+
+### Added
+- 17 unit tests in `room::tests` module:
+  - `add_peer_inserts_into_correct_room`
+  - `add_peer_returns_existing_peers_before_insert`
+  - `add_peer_rejects_duplicate_peer_code`
+  - `add_peer_same_code_different_rooms_allowed`
+  - `add_peer_broadcasts_peer_joined_to_existing`
+  - `remove_peer_removes_from_room`
+  - `remove_peer_cleans_up_empty_room`
+  - `remove_peer_broadcasts_peer_left`
+  - `remove_peer_nonexistent_does_not_panic`
+  - `find_peer_returns_sender_for_existing_peer`
+  - `find_peer_returns_none_for_absent_peer`
+  - `find_peer_works_across_rooms`
+  - `peer_a_disconnect_does_not_affect_peer_b`
+  - `multi_room_isolation`
+  - `get_room_peers_nonexistent_returns_empty`
+  - `empty_manager_counts_are_zero`
+  - `get_room_peers_returns_public_data`
+
+### Changed
+- Version bumped from `0.1.0` to `0.1.1` (tests only, no API change).
+
+### Tests
+- 45 unit tests + 1 doc-test = 46 total (was 28 + 1 = 29).
+
 ## [rendezvous-v0.0.5-trust-boundary] - 2026-02-23
 
 ### Added
