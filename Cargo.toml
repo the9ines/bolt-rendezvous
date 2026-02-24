@@ -17,4 +17,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dashmap = "6"
 
 [dev-dependencies]
+bolt-core = { path = "../bolt-core-sdk/rust/bolt-core" }
 tokio = { version = "1", features = ["test-util", "macros", "rt"] }
