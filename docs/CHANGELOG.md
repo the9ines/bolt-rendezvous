@@ -2,6 +2,40 @@
 
 All notable changes to bolt-rendezvous are documented here. Newest first.
 
+## [rendezvous-v0.2.0-sig-2a-packaging] - 2026-02-24
+
+Phase SIG-2A: Canonicalize Signal Server Packaging.
+
+Adds Docker packaging and env-based profiles for local vs internet
+deployment. Default behavior preserved when profile is unset.
+Subtree consumer compatibility verified (localbolt, localbolt-app).
+
+### Added
+- `Dockerfile` — multi-stage build (rust:1.84-slim-bookworm builder,
+  debian:bookworm-slim runtime). Non-root user. Builds `--release --locked`.
+- `.dockerignore` — excludes target/, .git/, docs/.
+- `BOLT_SIGNAL_PROFILE` env var — `local` (info log) or `internet` (warn log).
+  Unset preserves pre-SIG-2A behavior.
+- `BOLT_SIGNAL_HOST` / `BOLT_SIGNAL_PORT` env vars — override bind address.
+  CLI args (`--host`, `--port`) take highest priority.
+- README sections: "Run Locally", "Run with Docker", "Deploy (Fly.io / VPS)",
+  "Configuration" with resolution order and profile tables.
+
+### Changed
+- `src/main.rs` — env var resolution (CLI > env > profile > hardcoded).
+  Profile log level default. Warning on unknown profile value.
+- `src/room.rs` — cargo fmt whitespace only (pre-existing).
+
+### Verification
+- localbolt subtree: fmt PASS, clippy PASS, 46 tests PASS.
+- localbolt-app subtree: fmt PASS, clippy PASS, 46 tests PASS.
+- No wire format changes. No protocol type changes.
+
+### Tests
+- Unchanged: 45 unit + 16 protocol + 1 doc-test = 62 total.
+
+**Commit:** `f7e15f7` (feature), `a6a63ae` (merge to main)
+
 ## [rendezvous-protocol-v0.1.0] - 2026-02-24
 
 Phase A2: Signaling Type Deduplication.
