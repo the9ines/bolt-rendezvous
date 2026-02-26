@@ -39,24 +39,24 @@ use crate::room::{PeerInfo, RoomManager};
 
 /// Maximum WebSocket message size (text or binary). 1 MiB.
 /// Enforced at both protocol level (WebSocketConfig) and application level.
-pub(crate) const MAX_MESSAGE_BYTES: usize = 1_048_576;
+pub const MAX_MESSAGE_BYTES: usize = 1_048_576;
 
 /// Maximum length of `Register.device_name` in bytes.
-pub(crate) const MAX_DEVICE_NAME_BYTES: usize = 256;
+pub const MAX_DEVICE_NAME_BYTES: usize = 256;
 
 /// Maximum length of peer code fields (`Register.peer_code`, `Signal.to`).
-pub(crate) const MAX_PEER_CODE_BYTES: usize = 16;
+pub const MAX_PEER_CODE_BYTES: usize = 16;
 
 /// Maximum messages per second per connection.
-pub(crate) const RATE_LIMIT_PER_SECOND: u32 = 50;
+pub const RATE_LIMIT_PER_SECOND: u32 = 50;
 
 /// Consecutive rate-limit violations before forcibly closing the socket.
-pub(crate) const RATE_LIMIT_CLOSE_THRESHOLD: u32 = 3;
+pub const RATE_LIMIT_CLOSE_THRESHOLD: u32 = 3;
 
 // ── Validation Helpers (pure, testable) ─────────────────────────────────
 
 /// Reject messages exceeding `MAX_MESSAGE_BYTES`.
-pub(crate) fn validate_message_size(len: usize) -> Result<(), String> {
+pub fn validate_message_size(len: usize) -> Result<(), String> {
     if len > MAX_MESSAGE_BYTES {
         return Err(format!(
             "message too large ({len} bytes, max {MAX_MESSAGE_BYTES})"
@@ -66,7 +66,7 @@ pub(crate) fn validate_message_size(len: usize) -> Result<(), String> {
 }
 
 /// Validate device name length.
-pub(crate) fn validate_device_name(name: &str) -> Result<(), String> {
+pub fn validate_device_name(name: &str) -> Result<(), String> {
     if name.len() > MAX_DEVICE_NAME_BYTES {
         return Err(format!(
             "device_name too long ({} bytes, max {MAX_DEVICE_NAME_BYTES})",
@@ -78,7 +78,7 @@ pub(crate) fn validate_device_name(name: &str) -> Result<(), String> {
 
 /// Validate a peer code used as a signal target (`Signal.to`).
 /// Same rules as `validate_peer_code`: non-empty, max 16 chars, alphanumeric.
-pub(crate) fn validate_signal_target(to: &str) -> Result<(), String> {
+pub fn validate_signal_target(to: &str) -> Result<(), String> {
     if to.is_empty() {
         return Err("target peer code cannot be empty".to_string());
     }
@@ -101,14 +101,20 @@ pub(crate) fn validate_signal_target(to: &str) -> Result<(), String> {
 /// Resets the counter when the 1-second window elapses.
 /// After `RATE_LIMIT_CLOSE_THRESHOLD` consecutive violations, signals
 /// that the connection should be closed (fail-closed).
-pub(crate) struct RateLimit {
+pub struct RateLimit {
     remaining: u32,
     window_start: tokio::time::Instant,
     consecutive_violations: u32,
 }
 
+impl Default for RateLimit {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RateLimit {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             remaining: RATE_LIMIT_PER_SECOND,
             window_start: tokio::time::Instant::now(),
@@ -120,7 +126,7 @@ impl RateLimit {
     ///
     /// Returns `Ok(())` if allowed, `Err(true)` if the socket should be closed
     /// (threshold exceeded), `Err(false)` if rate-limited but not yet at threshold.
-    pub(crate) fn check(&mut self) -> Result<(), bool> {
+    pub fn check(&mut self) -> Result<(), bool> {
         let now = tokio::time::Instant::now();
         if now.duration_since(self.window_start) >= std::time::Duration::from_secs(1) {
             self.remaining = RATE_LIMIT_PER_SECOND;
@@ -473,7 +479,7 @@ pub async fn handle_connection(
 }
 
 /// Validate peer code format: non-empty, max 16 chars, alphanumeric only.
-pub(crate) fn validate_peer_code(code: &str) -> Result<(), String> {
+pub fn validate_peer_code(code: &str) -> Result<(), String> {
     if code.is_empty() {
         return Err("Peer code cannot be empty".to_string());
     }
