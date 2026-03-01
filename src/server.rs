@@ -762,6 +762,7 @@ mod tests {
 
     /// Server accepts codes that bolt-core rejects (intentional divergence).
     #[test]
+    #[cfg(feature = "with-bolt-core-tests")]
     fn server_accepts_codes_bolt_core_rejects() {
         // Ambiguous chars (I, L, O, 0, 1) — excluded from bolt-core alphabet.
         assert!(validate_peer_code("IL0O1X").is_ok());
@@ -781,6 +782,7 @@ mod tests {
 
     /// When a code is within the canonical alphabet and length, both agree.
     #[test]
+    #[cfg(feature = "with-bolt-core-tests")]
     fn canonical_codes_accepted_by_both() {
         // 6-char code using only unambiguous alphabet chars.
         assert!(validate_peer_code("ABCDEF").is_ok());
@@ -793,6 +795,7 @@ mod tests {
 
     /// Both reject empty codes.
     #[test]
+    #[cfg(feature = "with-bolt-core-tests")]
     fn both_reject_empty() {
         assert!(validate_peer_code("").is_err());
         assert!(!bolt_core::peer_code::is_valid_peer_code(""));

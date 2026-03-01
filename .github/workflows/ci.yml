@@ -25,3 +25,6 @@ jobs:
 
       - name: cargo test
         run: cargo test
+
+      - name: cargo test (bolt-core interop)
+        run: cargo test --features with-bolt-core-tests
