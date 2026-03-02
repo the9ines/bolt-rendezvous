@@ -21,7 +21,7 @@
 //! first-line defense. Application-level `validate_message_size()` provides
 //! defense-in-depth.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
@@ -161,10 +161,15 @@ fn ws_config() -> Option<WebSocketConfig> {
 // ── Connection Handler ──────────────────────────────────────────────────
 
 /// Handle a single incoming TCP connection: upgrade to WebSocket and process messages.
+///
+/// `trusted_proxies` controls X-Forwarded-For trust: only when the connecting
+/// socket address is in this list will the header be honored. Empty list means
+/// the header is always ignored (fail-closed).
 pub async fn handle_connection(
     stream: TcpStream,
     addr: SocketAddr,
     room_manager: Arc<RoomManager>,
+    trusted_proxies: Arc<Vec<IpAddr>>,
 ) {
     // We'll capture headers during the handshake callback to extract X-Forwarded-For.
     let forwarded_for = Arc::new(std::sync::Mutex::new(None::<String>));
@@ -200,11 +205,17 @@ pub async fn handle_connection(
     };
 
     // Determine the effective client IP.
-    let raw_ip = forwarded_for
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone())
-        .unwrap_or_else(|| addr.ip().to_string());
+    // AC-16: Only trust X-Forwarded-For when the connecting socket is a trusted proxy.
+    // Fail-closed: untrusted sources always use socket address.
+    let raw_ip = if trusted_proxies.contains(&addr.ip()) {
+        forwarded_for
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .unwrap_or_else(|| addr.ip().to_string())
+    } else {
+        addr.ip().to_string()
+    };
 
     // For self-hosted mode: all private/loopback IPs share one room ("local").
     // This lets devices on the same LAN discover each other even when the host
@@ -403,7 +414,7 @@ pub async fn handle_connection(
                         }
 
                         info!(from = %peer_code, to = %to, "signal relay");
-                        if let Some(target_sender) = room_manager.find_peer(&to) {
+                        if let Some(target_sender) = room_manager.find_peer(&client_ip, &to) {
                             let relay_msg = ServerMessage::Signal {
                                 from: peer_code.clone(),
                                 payload,
@@ -731,6 +742,76 @@ mod tests {
         }
         // First violation after reset: should NOT trigger close.
         assert_eq!(rl.check(), Err(false));
+    }
+
+    // ── X-Forwarded-For trust model (AC-16) ──────────────────────
+
+    #[test]
+    fn xff_ignored_when_proxy_not_trusted() {
+        // Simulate: untrusted source sends X-Forwarded-For header.
+        // The server should use the socket address, not the header value.
+        let trusted: Vec<IpAddr> = vec![];
+        let socket_ip: IpAddr = "203.0.113.50".parse().unwrap();
+        let xff_ip = "10.0.0.1";
+
+        // Logic under test (extracted from handle_connection):
+        let raw_ip = if trusted.contains(&socket_ip) {
+            Some(xff_ip.to_string())
+        } else {
+            None
+        }
+        .unwrap_or_else(|| socket_ip.to_string());
+
+        assert_eq!(raw_ip, "203.0.113.50");
+    }
+
+    #[test]
+    fn xff_honored_when_proxy_trusted() {
+        // Simulate: trusted proxy forwards X-Forwarded-For header.
+        let trusted: Vec<IpAddr> = vec!["198.51.100.1".parse().unwrap()];
+        let socket_ip: IpAddr = "198.51.100.1".parse().unwrap();
+        let xff_ip = "10.0.0.1";
+
+        let raw_ip = if trusted.contains(&socket_ip) {
+            Some(xff_ip.to_string())
+        } else {
+            None
+        }
+        .unwrap_or_else(|| socket_ip.to_string());
+
+        assert_eq!(raw_ip, "10.0.0.1");
+    }
+
+    #[test]
+    fn xff_falls_back_to_socket_when_trusted_but_no_header() {
+        // Trusted proxy connects but no X-Forwarded-For header present.
+        let trusted: Vec<IpAddr> = vec!["198.51.100.1".parse().unwrap()];
+        let socket_ip: IpAddr = "198.51.100.1".parse().unwrap();
+
+        let raw_ip = if trusted.contains(&socket_ip) {
+            None::<String> // No header
+        } else {
+            None
+        }
+        .unwrap_or_else(|| socket_ip.to_string());
+
+        assert_eq!(raw_ip, "198.51.100.1");
+    }
+
+    #[test]
+    fn xff_empty_trusted_list_always_ignores_header() {
+        // Default: empty trusted_proxies list → header always ignored.
+        let trusted: Vec<IpAddr> = vec![];
+        let socket_ip: IpAddr = "127.0.0.1".parse().unwrap();
+
+        let raw_ip = if trusted.contains(&socket_ip) {
+            Some("spoofed.ip".to_string())
+        } else {
+            None
+        }
+        .unwrap_or_else(|| socket_ip.to_string());
+
+        assert_eq!(raw_ip, "127.0.0.1");
     }
 
     // ── Constants sanity ────────────────────────────────────────

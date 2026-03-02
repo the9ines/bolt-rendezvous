@@ -23,7 +23,7 @@ pub mod protocol;
 pub mod room;
 pub mod server;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -40,15 +40,27 @@ use server::handle_connection;
 pub struct SignalingServer {
     addr: SocketAddr,
     room_manager: Arc<RoomManager>,
+    trusted_proxies: Arc<Vec<IpAddr>>,
 }
 
 impl SignalingServer {
     /// Create a new signaling server bound to the given address.
+    ///
+    /// By default, `X-Forwarded-For` is ignored (empty trusted proxy list).
     pub fn new(addr: SocketAddr) -> Self {
         Self {
             addr,
             room_manager: Arc::new(RoomManager::new()),
+            trusted_proxies: Arc::new(Vec::new()),
         }
+    }
+
+    /// Configure trusted proxy addresses whose `X-Forwarded-For` headers
+    /// will be honored for room assignment. Addresses not in this list
+    /// always use the socket address (fail-closed).
+    pub fn with_trusted_proxies(mut self, proxies: Vec<IpAddr>) -> Self {
+        self.trusted_proxies = Arc::new(proxies);
+        self
     }
 
     /// Run the signaling server, accepting connections until the process is terminated.
@@ -68,8 +80,9 @@ impl SignalingServer {
             match listener.accept().await {
                 Ok((stream, addr)) => {
                     let room_manager = self.room_manager.clone();
+                    let trusted_proxies = self.trusted_proxies.clone();
                     tokio::spawn(async move {
-                        handle_connection(stream, addr, room_manager).await;
+                        handle_connection(stream, addr, room_manager, trusted_proxies).await;
                     });
                 }
                 Err(e) => {

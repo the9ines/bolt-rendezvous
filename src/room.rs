@@ -145,12 +145,12 @@ impl RoomManager {
             .unwrap_or_default()
     }
 
-    /// Look up a peer's sender channel by peer code across all rooms.
+    /// Look up a peer's sender channel by peer code within the caller's room.
     ///
-    /// This performs a linear scan; acceptable for the expected small number of
-    /// peers per deployment.
-    pub fn find_peer(&self, peer_code: &str) -> Option<PeerSender> {
-        for room in self.rooms.iter() {
+    /// Enforces room isolation: only peers in the same room as the caller
+    /// can be resolved. Cross-room lookup returns `None`.
+    pub fn find_peer(&self, caller_room: &str, peer_code: &str) -> Option<PeerSender> {
+        if let Some(room) = self.rooms.get(caller_room) {
             for peer in room.value().iter() {
                 if peer.peer_code == peer_code {
                     return Some(peer.sender.clone());
@@ -361,24 +361,24 @@ mod tests {
     // ─── find_peer ──────────────────────────────────────────────────────
 
     #[test]
-    fn find_peer_returns_sender_for_existing_peer() {
+    fn find_peer_returns_sender_for_same_room_peer() {
         let rm = RoomManager::new();
         let (p1, _r1) = make_peer("FINDME", "Device");
 
         rm.add_peer("10.0.0.1", p1).unwrap();
 
-        let sender = rm.find_peer("FINDME");
+        let sender = rm.find_peer("10.0.0.1", "FINDME");
         assert!(sender.is_some());
     }
 
     #[test]
     fn find_peer_returns_none_for_absent_peer() {
         let rm = RoomManager::new();
-        assert!(rm.find_peer("NOBODY").is_none());
+        assert!(rm.find_peer("10.0.0.1", "NOBODY").is_none());
     }
 
     #[test]
-    fn find_peer_works_across_rooms() {
+    fn find_peer_rejects_cross_room_lookup() {
         let rm = RoomManager::new();
         let (p1, _r1) = make_peer("ROOM1PEER", "Room 1");
         let (p2, _r2) = make_peer("ROOM2PEER", "Room 2");
@@ -386,10 +386,30 @@ mod tests {
         rm.add_peer("10.0.0.1", p1).unwrap();
         rm.add_peer("10.0.0.2", p2).unwrap();
 
-        // find_peer scans all rooms
-        assert!(rm.find_peer("ROOM1PEER").is_some());
-        assert!(rm.find_peer("ROOM2PEER").is_some());
-        assert!(rm.find_peer("MISSING").is_none());
+        // Same-room lookup succeeds
+        assert!(rm.find_peer("10.0.0.1", "ROOM1PEER").is_some());
+        assert!(rm.find_peer("10.0.0.2", "ROOM2PEER").is_some());
+
+        // Cross-room lookup fails (room isolation enforced)
+        assert!(rm.find_peer("10.0.0.1", "ROOM2PEER").is_none());
+        assert!(rm.find_peer("10.0.0.2", "ROOM1PEER").is_none());
+
+        // Nonexistent peer still fails
+        assert!(rm.find_peer("10.0.0.1", "MISSING").is_none());
+    }
+
+    #[test]
+    fn find_peer_cross_room_regression() {
+        // AC-15 regression: ensure cross-room relay is impossible
+        let rm = RoomManager::new();
+        let (attacker, _r1) = make_peer("ATTACKER", "Malicious");
+        let (victim, _r2) = make_peer("VICTIM", "Target");
+
+        rm.add_peer("10.0.0.1", attacker).unwrap();
+        rm.add_peer("10.0.0.2", victim).unwrap();
+
+        // Attacker in room 10.0.0.1 cannot resolve VICTIM in room 10.0.0.2
+        assert!(rm.find_peer("10.0.0.1", "VICTIM").is_none());
     }
 
     // ─── Concurrent edge simulation ─────────────────────────────────────
@@ -409,8 +429,8 @@ mod tests {
 
         // B is still intact
         assert_eq!(rm.peer_count(), 1);
-        assert!(rm.find_peer("PEERB").is_some());
-        assert!(rm.find_peer("PEERA").is_none());
+        assert!(rm.find_peer("10.0.0.1", "PEERB").is_some());
+        assert!(rm.find_peer("10.0.0.1", "PEERA").is_none());
 
         let peers = rm.get_room_peers("10.0.0.1");
         assert_eq!(peers.len(), 1);
@@ -441,7 +461,7 @@ mod tests {
         // Room 1 cleaned up, room 2 intact
         assert_eq!(rm.room_count(), 1);
         assert_eq!(rm.peer_count(), 1);
-        assert!(rm.find_peer("R2A").is_some());
+        assert!(rm.find_peer("10.0.0.2", "R2A").is_some());
         assert!(rm.get_room_peers("10.0.0.1").is_empty());
     }
 
