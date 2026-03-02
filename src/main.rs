@@ -98,7 +98,22 @@ async fn main() {
         tracing::info!(count = trusted_proxies.len(), "TRUSTED_PROXIES configured");
     }
 
-    let server = SignalingServer::new(addr).with_trusted_proxies(trusted_proxies);
+    // Parse MAX_WS_CONNECTIONS env var (optional). Default defined in lib.rs.
+    let max_connections: Option<usize> = std::env::var("MAX_WS_CONNECTIONS")
+        .ok()
+        .and_then(|v| match v.trim().parse::<usize>() {
+            Ok(n) => Some(n),
+            Err(e) => {
+                tracing::warn!(value = %v, error = %e, "invalid MAX_WS_CONNECTIONS — using default");
+                None
+            }
+        });
+
+    let mut server = SignalingServer::new(addr).with_trusted_proxies(trusted_proxies);
+    if let Some(max) = max_connections {
+        tracing::info!(max_connections = max, "MAX_WS_CONNECTIONS configured");
+        server = server.with_max_connections(max);
+    }
 
     if let Err(e) = server.run().await {
         eprintln!("server error: {e}");
