@@ -4,6 +4,8 @@
 //! enabling local-network device discovery without any manual pairing. The
 //! [`RoomManager`] uses a [`DashMap`] for lock-free concurrent access.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -12,6 +14,11 @@ use crate::protocol::{DeviceType, PeerData, ServerMessage};
 
 /// Channel sender type used to push messages to a connected peer's WebSocket.
 pub type PeerSender = mpsc::UnboundedSender<ServerMessage>;
+
+/// Monotonic session counter. Each `add_peer` call assigns a unique session ID
+/// so that `remove_peer` can distinguish the current connection from a stale one
+/// that was replaced (DP-5).
+static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Information about a connected peer stored in a room.
 #[derive(Debug, Clone)]
@@ -24,6 +31,9 @@ pub struct PeerInfo {
     pub device_type: DeviceType,
     /// Channel for sending messages to this peer's WebSocket write task.
     pub sender: PeerSender,
+    /// Monotonic session ID assigned by `add_peer`. Used by `remove_peer` to
+    /// avoid removing a replacement connection (DP-5 race guard).
+    pub session_id: u64,
 }
 
 impl PeerInfo {
@@ -56,12 +66,17 @@ impl RoomManager {
 
     /// Add a peer to the room for the given IP address.
     ///
-    /// Returns the list of peers that were **already** in the room (before this
-    /// peer was added), so the caller can send the initial peer list to the
-    /// newly registered client.
+    /// Returns `(existing_peers, session_id)`: the list of peers that were
+    /// **already** in the room (before this peer was added), plus a monotonic
+    /// session ID that the caller must pass back to [`remove_peer`] on cleanup.
+    /// The session ID prevents a stale connection's teardown from removing a
+    /// replacement connection that reused the same peer code (DP-5).
     ///
     /// Also broadcasts a `peer_joined` message to every existing peer in the room.
-    pub fn add_peer(&self, ip: &str, peer: PeerInfo) -> Result<Vec<PeerData>, String> {
+    pub fn add_peer(&self, ip: &str, mut peer: PeerInfo) -> Result<(Vec<PeerData>, u64), String> {
+        let session_id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+        peer.session_id = session_id;
+
         let peer_data = peer.to_peer_data();
         let mut existing_peers = Vec::new();
 
@@ -100,21 +115,40 @@ impl RoomManager {
             peer_code = %peer.peer_code,
             device_name = %peer.device_name,
             room_size = room.len() + 1,
+            session_id = session_id,
             "peer joined room"
         );
 
         room.push(peer);
-        Ok(existing_peers)
+        Ok((existing_peers, session_id))
     }
 
     /// Remove a peer from the room for the given IP address.
     ///
+    /// Only removes the peer if its `session_id` matches, preventing a stale
+    /// connection's cleanup from removing a replacement that reused the same
+    /// peer code (DP-5 race guard).
+    ///
     /// Broadcasts a `peer_left` message to all remaining peers in the room.
     /// Cleans up the room entry if it becomes empty.
-    pub fn remove_peer(&self, ip: &str, peer_code: &str) {
+    pub fn remove_peer(&self, ip: &str, peer_code: &str, session_id: u64) {
         let should_remove_room = {
             if let Some(mut room) = self.rooms.get_mut(ip) {
-                room.retain(|p| p.peer_code != peer_code);
+                let len_before = room.len();
+                room.retain(|p| !(p.peer_code == peer_code && p.session_id == session_id));
+                let removed = room.len() < len_before;
+
+                if !removed {
+                    // The peer was already replaced by a newer session (DP-5).
+                    // Do not broadcast peer_left — the replacement is still active.
+                    debug!(
+                        ip = %ip,
+                        peer_code = %peer_code,
+                        session_id = session_id,
+                        "skipping remove — peer was replaced by newer session"
+                    );
+                    return;
+                }
 
                 // Broadcast peer_left to remaining peers.
                 let leave_msg = ServerMessage::PeerLeft {
@@ -129,6 +163,7 @@ impl RoomManager {
                 info!(
                     ip = %ip,
                     peer_code = %peer_code,
+                    session_id = session_id,
                     room_size = room.len(),
                     "peer left room"
                 );
@@ -201,6 +236,7 @@ mod tests {
             device_name: name.to_string(),
             device_type: DeviceType::Desktop,
             sender: tx,
+            session_id: 0, // assigned by add_peer
         };
         (peer, rx)
     }
@@ -216,7 +252,8 @@ mod tests {
         assert!(result.is_ok());
 
         // First peer in room → existing list is empty
-        assert!(result.unwrap().is_empty());
+        let (existing, _session_id) = result.unwrap();
+        assert!(existing.is_empty());
 
         assert_eq!(rm.room_count(), 1);
         assert_eq!(rm.peer_count(), 1);
@@ -233,7 +270,7 @@ mod tests {
         let (p2, _r2) = make_peer("BBB", "Second");
 
         rm.add_peer("10.0.0.1", p1).unwrap();
-        let existing = rm.add_peer("10.0.0.1", p2).unwrap();
+        let (existing, _) = rm.add_peer("10.0.0.1", p2).unwrap();
 
         // Second peer should see the first peer in the existing list
         assert_eq!(existing.len(), 1);
@@ -246,10 +283,10 @@ mod tests {
         let (p1, mut rx1) = make_peer("DUP", "First");
         let (p2, _r2) = make_peer("DUP", "Second");
 
-        assert!(rm.add_peer("10.0.0.1", p1).is_ok());
+        let (_, session1) = rm.add_peer("10.0.0.1", p1).unwrap();
         // Second registration with same code replaces the first (reconnect).
-        let result = rm.add_peer("10.0.0.1", p2);
-        assert!(result.is_ok());
+        let (_, session2) = rm.add_peer("10.0.0.1", p2).unwrap();
+        assert!(session2 > session1, "session IDs must be monotonically increasing");
 
         // Still only 1 peer in room (replaced, not duplicated).
         assert_eq!(rm.peer_count(), 1);
@@ -274,6 +311,29 @@ mod tests {
 
         assert_eq!(rm.room_count(), 2);
         assert_eq!(rm.peer_count(), 2);
+    }
+
+    #[test]
+    fn remove_peer_skips_replaced_session_dp5() {
+        // DP-5 regression: old connection cleanup must NOT remove the replacement.
+        let rm = RoomManager::new();
+        let (p1, _r1) = make_peer("RECONNECT", "First");
+        let (p2, _r2) = make_peer("RECONNECT", "Second");
+
+        let (_, session1) = rm.add_peer("10.0.0.1", p1).unwrap();
+        let (_, session2) = rm.add_peer("10.0.0.1", p2).unwrap();
+        assert_eq!(rm.peer_count(), 1);
+
+        // Old session's cleanup fires — must NOT remove the replacement.
+        rm.remove_peer("10.0.0.1", "RECONNECT", session1);
+        assert_eq!(rm.peer_count(), 1, "replacement must survive old cleanup");
+
+        let peers = rm.get_room_peers("10.0.0.1");
+        assert_eq!(peers[0].device_name, "Second");
+
+        // New session's cleanup fires — removes correctly.
+        rm.remove_peer("10.0.0.1", "RECONNECT", session2);
+        assert_eq!(rm.peer_count(), 0);
     }
 
     #[test]
@@ -306,11 +366,11 @@ mod tests {
         let (p1, _r1) = make_peer("RM1", "Device 1");
         let (p2, _r2) = make_peer("RM2", "Device 2");
 
-        rm.add_peer("10.0.0.1", p1).unwrap();
+        let (_, s1) = rm.add_peer("10.0.0.1", p1).unwrap();
         rm.add_peer("10.0.0.1", p2).unwrap();
         assert_eq!(rm.peer_count(), 2);
 
-        rm.remove_peer("10.0.0.1", "RM1");
+        rm.remove_peer("10.0.0.1", "RM1", s1);
 
         assert_eq!(rm.peer_count(), 1);
         let peers = rm.get_room_peers("10.0.0.1");
@@ -323,10 +383,10 @@ mod tests {
         let rm = RoomManager::new();
         let (p1, _r1) = make_peer("SOLO", "Only One");
 
-        rm.add_peer("10.0.0.1", p1).unwrap();
+        let (_, s1) = rm.add_peer("10.0.0.1", p1).unwrap();
         assert_eq!(rm.room_count(), 1);
 
-        rm.remove_peer("10.0.0.1", "SOLO");
+        rm.remove_peer("10.0.0.1", "SOLO", s1);
 
         assert_eq!(rm.room_count(), 0);
         assert_eq!(rm.peer_count(), 0);
@@ -339,12 +399,12 @@ mod tests {
         let (leave, _leave_rx) = make_peer("LEAVE", "Leaver");
 
         rm.add_peer("10.0.0.1", stay).unwrap();
-        rm.add_peer("10.0.0.1", leave).unwrap();
+        let (_, s_leave) = rm.add_peer("10.0.0.1", leave).unwrap();
 
         // Drain PeerJoined from STAY's channel
         let _ = stay_rx.try_recv();
 
-        rm.remove_peer("10.0.0.1", "LEAVE");
+        rm.remove_peer("10.0.0.1", "LEAVE", s_leave);
 
         let msg = stay_rx.try_recv().expect("should have received PeerLeft");
         match msg {
@@ -365,12 +425,12 @@ mod tests {
 
         rm.add_peer("10.0.0.1", p1).unwrap();
 
-        // Remove a peer that doesn't exist in the room
-        rm.remove_peer("10.0.0.1", "GHOST");
+        // Remove with a bogus session_id — should not remove the real peer
+        rm.remove_peer("10.0.0.1", "EXISTS", 999999);
         assert_eq!(rm.peer_count(), 1);
 
         // Remove from a room that doesn't exist
-        rm.remove_peer("10.0.0.99", "GHOST");
+        rm.remove_peer("10.0.0.99", "GHOST", 0);
         assert_eq!(rm.peer_count(), 1);
     }
 
@@ -436,12 +496,12 @@ mod tests {
         let (pa, _ra) = make_peer("PEERA", "Device A");
         let (pb, _rb) = make_peer("PEERB", "Device B");
 
-        rm.add_peer("10.0.0.1", pa).unwrap();
+        let (_, sa) = rm.add_peer("10.0.0.1", pa).unwrap();
         rm.add_peer("10.0.0.1", pb).unwrap();
         assert_eq!(rm.peer_count(), 2);
 
         // A disconnects
-        rm.remove_peer("10.0.0.1", "PEERA");
+        rm.remove_peer("10.0.0.1", "PEERA", sa);
 
         // B is still intact
         assert_eq!(rm.peer_count(), 1);
@@ -463,16 +523,16 @@ mod tests {
         let (p2, _r2) = make_peer("R1B", "Room1 B");
         let (p3, _r3) = make_peer("R2A", "Room2 A");
 
-        rm.add_peer("10.0.0.1", p1).unwrap();
-        rm.add_peer("10.0.0.1", p2).unwrap();
+        let (_, s1a) = rm.add_peer("10.0.0.1", p1).unwrap();
+        let (_, s1b) = rm.add_peer("10.0.0.1", p2).unwrap();
         rm.add_peer("10.0.0.2", p3).unwrap();
 
         assert_eq!(rm.room_count(), 2);
         assert_eq!(rm.peer_count(), 3);
 
         // Remove all peers from room 1
-        rm.remove_peer("10.0.0.1", "R1A");
-        rm.remove_peer("10.0.0.1", "R1B");
+        rm.remove_peer("10.0.0.1", "R1A", s1a);
+        rm.remove_peer("10.0.0.1", "R1B", s1b);
 
         // Room 1 cleaned up, room 2 intact
         assert_eq!(rm.room_count(), 1);

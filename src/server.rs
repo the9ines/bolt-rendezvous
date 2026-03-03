@@ -378,10 +378,11 @@ pub async fn handle_connection(
         device_name: _device_name,
         device_type: _device_type,
         sender: tx.clone(),
+        session_id: 0, // assigned by add_peer
     };
 
-    let existing_peers = match room_manager.add_peer(&client_ip, peer_info) {
-        Ok(peers) => peers,
+    let (existing_peers, session_id) = match room_manager.add_peer(&client_ip, peer_info) {
+        Ok(result) => result,
         Err(e) => {
             warn!(addr = %addr, error = %e, "peer code collision");
             let _ = tx.send(ServerMessage::Error { message: e });
@@ -509,8 +510,10 @@ pub async fn handle_connection(
     }
 
     // --- Cleanup ---
-    info!(peer_code = %peer_code, client_ip = %client_ip, "peer disconnected");
-    room_manager.remove_peer(&client_ip, &peer_code);
+    // Pass session_id so remove_peer skips removal if this connection was
+    // replaced by a newer session with the same peer_code (DP-5 race guard).
+    info!(peer_code = %peer_code, client_ip = %client_ip, session_id = session_id, "peer disconnected");
+    room_manager.remove_peer(&client_ip, &peer_code, session_id);
     write_task.abort();
 }
 
