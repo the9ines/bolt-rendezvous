@@ -6,7 +6,7 @@
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::protocol::{DeviceType, PeerData, ServerMessage};
 
@@ -67,9 +67,17 @@ impl RoomManager {
 
         let mut room = self.rooms.entry(ip.to_string()).or_default();
 
-        // Reject duplicate peer codes within the same room.
-        if room.iter().any(|p| p.peer_code == peer.peer_code) {
-            return Err(format!("Peer code '{}' already in use", peer.peer_code));
+        // Replace stale peer with the same code (reconnection scenario).
+        // The old WebSocket may not have been cleaned up yet when the client
+        // reconnects with the same peer code. Drop the old sender to close
+        // the stale connection and make room for the new one.
+        if let Some(pos) = room.iter().position(|p| p.peer_code == peer.peer_code) {
+            warn!(
+                ip = %ip,
+                peer_code = %peer.peer_code,
+                "replacing stale peer connection (reconnect)"
+            );
+            room.remove(pos);
         }
 
         // Snapshot existing peers for the "peers" response.
@@ -233,18 +241,26 @@ mod tests {
     }
 
     #[test]
-    fn add_peer_rejects_duplicate_peer_code() {
+    fn add_peer_replaces_duplicate_peer_code() {
         let rm = RoomManager::new();
-        let (p1, _r1) = make_peer("DUP", "First");
+        let (p1, mut rx1) = make_peer("DUP", "First");
         let (p2, _r2) = make_peer("DUP", "Second");
 
         assert!(rm.add_peer("10.0.0.1", p1).is_ok());
-        let err = rm.add_peer("10.0.0.1", p2);
-        assert!(err.is_err());
-        assert!(err.unwrap_err().contains("already in use"));
+        // Second registration with same code replaces the first (reconnect).
+        let result = rm.add_peer("10.0.0.1", p2);
+        assert!(result.is_ok());
 
-        // Only 1 peer in room
+        // Still only 1 peer in room (replaced, not duplicated).
         assert_eq!(rm.peer_count(), 1);
+
+        // The replaced peer's device_name should be "Second".
+        let peers = rm.get_room_peers("10.0.0.1");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].device_name, "Second");
+
+        // The old sender should be dropped (channel closed).
+        assert!(rx1.try_recv().is_err());
     }
 
     #[test]
