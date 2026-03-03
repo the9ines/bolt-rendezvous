@@ -25,6 +25,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -166,11 +167,35 @@ fn ws_config() -> Option<WebSocketConfig> {
 /// socket address is in this list will the header be honored. Empty list means
 /// the header is always ignored (fail-closed).
 pub async fn handle_connection(
-    stream: TcpStream,
+    mut stream: TcpStream,
     addr: SocketAddr,
     room_manager: Arc<RoomManager>,
     trusted_proxies: Arc<Vec<IpAddr>>,
 ) {
+    // Peek at the incoming request to detect plain HTTP (non-WebSocket) requests.
+    // Reverse proxies (e.g. Fly.io) send HTTP health checks without the Upgrade
+    // header. Respond with 200 OK directly instead of failing the WS handshake.
+    let mut peek_buf = [0u8; 4096];
+    match stream.peek(&mut peek_buf).await {
+        Ok(n) => {
+            let preview = String::from_utf8_lossy(&peek_buf[..n]);
+            if !preview.to_ascii_lowercase().contains("upgrade: websocket") {
+                let body = "bolt-rendezvous OK";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body,
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                return;
+            }
+        }
+        Err(e) => {
+            error!(addr = %addr, error = %e, "failed to peek at connection");
+            return;
+        }
+    }
+
     // We'll capture headers during the handshake callback to extract X-Forwarded-For.
     let forwarded_for = Arc::new(std::sync::Mutex::new(None::<String>));
     let forwarded_for_cb = forwarded_for.clone();
