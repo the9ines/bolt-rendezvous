@@ -77,22 +77,27 @@ pub fn validate_device_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate a peer code used as a signal target (`Signal.to`).
-/// Same rules as `validate_peer_code`: non-empty, max 16 chars, alphanumeric.
-pub fn validate_signal_target(to: &str) -> Result<(), String> {
-    if to.is_empty() {
-        return Err("target peer code cannot be empty".to_string());
+/// Normalize and validate a signal target peer code (`Signal.to`).
+/// Same rules as `validate_peer_code`: strip hyphens, non-empty, max 16 chars,
+/// ASCII alphanumeric. Returns the normalized code on success.
+pub fn validate_signal_target(to: &str) -> Result<String, String> {
+    let normalized: String = to.chars().filter(|c| *c != '-').collect();
+    if normalized.is_empty() {
+        return Err("invalid_peer_code: Target peer code cannot be empty".to_string());
     }
-    if to.len() > MAX_PEER_CODE_BYTES {
+    if normalized.len() > MAX_PEER_CODE_BYTES {
         return Err(format!(
-            "target peer code too long ({} bytes, max {MAX_PEER_CODE_BYTES})",
-            to.len()
+            "invalid_peer_code: Target peer code too long ({} chars, max {MAX_PEER_CODE_BYTES} after removing hyphens)",
+            normalized.len()
         ));
     }
-    if !to.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return Err("target peer code must be alphanumeric".to_string());
+    if !normalized.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(
+            "invalid_peer_code: Target peer code must contain only letters and digits (a-z, A-Z, 0-9). Hyphens are stripped automatically."
+                .to_string(),
+        );
     }
-    Ok(())
+    Ok(normalized)
 }
 
 // ── Per-Connection Rate Limiter ─────────────────────────────────────────
@@ -364,13 +369,16 @@ pub async fn handle_connection(
         }
     };
 
-    // Validate peer code format.
-    if let Err(e) = validate_peer_code(&peer_code) {
-        warn!(addr = %addr, error = %e, "invalid peer code");
-        let _ = tx.send(ServerMessage::Error { message: e });
-        write_task.abort();
-        return;
-    }
+    // Validate and normalize peer code.
+    let peer_code = match validate_peer_code(&peer_code) {
+        Ok(normalized) => normalized,
+        Err(e) => {
+            warn!(addr = %addr, error = %e, "invalid peer code");
+            let _ = tx.send(ServerMessage::Error { message: e });
+            write_task.abort();
+            return;
+        }
+    };
 
     // Build peer info and add to room.
     let peer_info = PeerInfo {
@@ -432,12 +440,15 @@ pub async fn handle_connection(
 
                 match serde_json::from_str::<ClientMessage>(&text) {
                     Ok(ClientMessage::Signal { to, payload }) => {
-                        // Validate Signal.to field.
-                        if let Err(e) = validate_signal_target(&to) {
-                            warn!(from = %peer_code, error = %e, "invalid signal target");
-                            let _ = tx.send(ServerMessage::Error { message: e });
-                            continue;
-                        }
+                        // Validate and normalize Signal.to field.
+                        let to = match validate_signal_target(&to) {
+                            Ok(normalized) => normalized,
+                            Err(e) => {
+                                warn!(from = %peer_code, error = %e, "invalid signal target");
+                                let _ = tx.send(ServerMessage::Error { message: e });
+                                continue;
+                            }
+                        };
 
                         info!(from = %peer_code, to = %to, "signal relay");
                         if let Some(target_sender) = room_manager.find_peer(&client_ip, &to) {
@@ -517,20 +528,25 @@ pub async fn handle_connection(
     write_task.abort();
 }
 
-/// Validate peer code format: non-empty, max 16 chars, alphanumeric only.
-pub fn validate_peer_code(code: &str) -> Result<(), String> {
-    if code.is_empty() {
-        return Err("Peer code cannot be empty".to_string());
+/// Normalize and validate a peer code: strip hyphens, then check non-empty,
+/// max 16 chars, ASCII alphanumeric only. Returns the normalized code on success.
+pub fn validate_peer_code(code: &str) -> Result<String, String> {
+    let normalized: String = code.chars().filter(|c| *c != '-').collect();
+    if normalized.is_empty() {
+        return Err("invalid_peer_code: Peer code cannot be empty".to_string());
     }
-    if code.len() > MAX_PEER_CODE_BYTES {
+    if normalized.len() > MAX_PEER_CODE_BYTES {
         return Err(format!(
-            "Peer code too long (max {MAX_PEER_CODE_BYTES} characters)"
+            "invalid_peer_code: Peer code too long (max {MAX_PEER_CODE_BYTES} characters after removing hyphens)"
         ));
     }
-    if !code.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return Err("Peer code must be alphanumeric".to_string());
+    if !normalized.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(
+            "invalid_peer_code: Peer code must contain only letters and digits (a-z, A-Z, 0-9). Hyphens are stripped automatically."
+                .to_string(),
+        );
     }
-    Ok(())
+    Ok(normalized)
 }
 
 /// Check if an IP address is private (RFC 1918), loopback, or link-local.
@@ -644,14 +660,31 @@ mod tests {
 
     #[test]
     fn signal_target_valid() {
-        assert!(validate_signal_target("ABC123").is_ok());
-        assert!(validate_signal_target("X").is_ok());
-        assert!(validate_signal_target(&"A".repeat(MAX_PEER_CODE_BYTES)).is_ok());
+        assert_eq!(validate_signal_target("ABC123").unwrap(), "ABC123");
+        assert_eq!(validate_signal_target("X").unwrap(), "X");
+        assert_eq!(
+            validate_signal_target(&"A".repeat(MAX_PEER_CODE_BYTES)).unwrap(),
+            "A".repeat(MAX_PEER_CODE_BYTES)
+        );
+    }
+
+    #[test]
+    fn signal_target_hyphens_stripped() {
+        assert_eq!(validate_signal_target("ABC-123").unwrap(), "ABC123");
+        assert_eq!(validate_signal_target("AB-CD-EF").unwrap(), "ABCDEF");
+        assert_eq!(validate_signal_target("ABCD-EFGH").unwrap(), "ABCDEFGH");
     }
 
     #[test]
     fn signal_target_empty() {
         let result = validate_signal_target("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn signal_target_only_hyphens() {
+        let result = validate_signal_target("---");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cannot be empty"));
     }
@@ -665,17 +698,27 @@ mod tests {
 
     #[test]
     fn signal_target_non_alphanumeric() {
-        assert!(validate_signal_target("ABC-123").is_err());
         assert!(validate_signal_target("ABC 123").is_err());
         assert!(validate_signal_target("ABC\n123").is_err());
+        assert!(validate_signal_target("AB!C").is_err());
     }
 
     // ── validate_peer_code ──────────────────────────────────────
 
     #[test]
     fn peer_code_valid() {
-        assert!(validate_peer_code("ABC123").is_ok());
-        assert!(validate_peer_code(&"Z".repeat(MAX_PEER_CODE_BYTES)).is_ok());
+        assert_eq!(validate_peer_code("ABC123").unwrap(), "ABC123");
+        assert_eq!(
+            validate_peer_code(&"Z".repeat(MAX_PEER_CODE_BYTES)).unwrap(),
+            "Z".repeat(MAX_PEER_CODE_BYTES)
+        );
+    }
+
+    #[test]
+    fn peer_code_hyphens_stripped() {
+        assert_eq!(validate_peer_code("ABCD-EFGH").unwrap(), "ABCDEFGH");
+        assert_eq!(validate_peer_code("AB-CD").unwrap(), "ABCD");
+        assert_eq!(validate_peer_code("A-B-C-D").unwrap(), "ABCD");
     }
 
     #[test]
@@ -684,13 +727,39 @@ mod tests {
     }
 
     #[test]
+    fn peer_code_only_hyphens() {
+        let result = validate_peer_code("----");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cannot be empty"));
+    }
+
+    #[test]
     fn peer_code_too_long() {
         assert!(validate_peer_code(&"A".repeat(MAX_PEER_CODE_BYTES + 1)).is_err());
     }
 
     #[test]
+    fn peer_code_too_long_after_strip() {
+        // 16 alphanumeric + hyphens = should still be OK (hyphens don't count)
+        assert!(validate_peer_code(&format!("{}--", "A".repeat(MAX_PEER_CODE_BYTES))).is_ok());
+        // 17 alphanumeric + hyphens = too long after strip
+        assert!(validate_peer_code(&format!("{}-", "A".repeat(MAX_PEER_CODE_BYTES + 1))).is_err());
+    }
+
+    #[test]
     fn peer_code_non_alphanumeric() {
         assert!(validate_peer_code("AB!C").is_err());
+        assert!(validate_peer_code("AB C").is_err());
+        assert!(validate_peer_code("AB\nC").is_err());
+    }
+
+    #[test]
+    fn peer_code_error_prefix() {
+        // All errors should carry the invalid_peer_code prefix for client matching.
+        let err = validate_peer_code("").unwrap_err();
+        assert!(err.starts_with("invalid_peer_code:"), "missing prefix: {err}");
+        let err = validate_peer_code("AB!C").unwrap_err();
+        assert!(err.starts_with("invalid_peer_code:"), "missing prefix: {err}");
     }
 
     // ── RateLimit ───────────────────────────────────────────────
