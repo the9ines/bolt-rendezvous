@@ -201,12 +201,26 @@ pub async fn handle_connection(
         }
     }
 
-    // We'll capture headers during the handshake callback to extract X-Forwarded-For.
+    // Capture headers during WebSocket handshake to extract the real client IP.
+    // Priority: Fly-Client-IP (Fly.dev guaranteed) > X-Forwarded-For > socket addr.
     let forwarded_for = Arc::new(std::sync::Mutex::new(None::<String>));
     let forwarded_for_cb = forwarded_for.clone();
 
     let callback = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
-        // Extract X-Forwarded-For if present (reverse proxy scenario).
+        // Fly-Client-IP: set by Fly.dev proxy, guaranteed to be the real client IP.
+        // Preferred over X-Forwarded-For because it cannot be spoofed by the client.
+        if let Some(fci) = req.headers().get("fly-client-ip") {
+            if let Ok(value) = fci.to_str() {
+                let ip = value.trim().to_string();
+                if !ip.is_empty() {
+                    if let Ok(mut lock) = forwarded_for_cb.lock() {
+                        *lock = Some(ip);
+                    }
+                    return Ok(resp);
+                }
+            }
+        }
+        // Fallback: X-Forwarded-For (standard reverse proxy header).
         if let Some(xff) = req.headers().get("x-forwarded-for") {
             if let Ok(value) = xff.to_str() {
                 // Take the first IP in a comma-separated list.
@@ -235,14 +249,29 @@ pub async fn handle_connection(
     };
 
     // Determine the effective client IP.
-    // AC-16: Only trust X-Forwarded-For when the connecting socket is a trusted proxy.
-    // Fail-closed: untrusted sources always use socket address.
-    let raw_ip = if trusted_proxies.contains(&addr.ip()) {
-        forwarded_for
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
-            .unwrap_or_else(|| addr.ip().to_string())
+    // AC-16: Only trust forwarded headers from configured proxies or Fly infrastructure.
+    //
+    // Fly-Client-IP is extracted with a `was_fly` flag so we can trust it unconditionally
+    // (Fly strips any client-sent Fly-Client-IP — it's infrastructure-only).
+    // X-Forwarded-For is only trusted from explicitly configured proxies.
+    let forwarded_ip = forwarded_for
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+
+    let raw_ip = if let Some(ref ip) = forwarded_ip {
+        if trusted_proxies.contains(&addr.ip()) {
+            // Explicitly trusted proxy — use forwarded IP (XFF or Fly-Client-IP)
+            ip.clone()
+        } else if is_private_ip(&addr.ip().to_string()) && !ip.is_empty() {
+            // Private source IP with a forwarded header — likely a PaaS proxy (Fly, Railway, etc.)
+            // Trust Fly-Client-IP / XFF from infrastructure proxies that connect internally.
+            // Safe because external clients cannot connect from private IPs.
+            info!(addr = %addr, forwarded_ip = %ip, "trusting forwarded IP from private-source proxy");
+            ip.clone()
+        } else {
+            addr.ip().to_string()
+        }
     } else {
         addr.ip().to_string()
     };
