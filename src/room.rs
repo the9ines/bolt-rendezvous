@@ -143,10 +143,14 @@ impl RoomManager {
         info!(
             ip = %ip,
             peer_code = %peer.peer_code,
-            device_name = %peer.device_name,
             room_size = room.len() + 1,
-            session_id = session_id,
             "peer joined room"
+        );
+        // Device name at DEBUG only — may contain personally identifiable info.
+        debug!(
+            peer_code = %peer.peer_code,
+            device_name = %peer.device_name,
+            "peer device details"
         );
 
         room.push(peer);

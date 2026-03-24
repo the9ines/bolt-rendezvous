@@ -217,20 +217,31 @@ pub async fn handle_connection(
         // Preferred over X-Forwarded-For because it cannot be spoofed by the client.
         if let Some(fci) = req.headers().get("fly-client-ip") {
             if let Ok(value) = fci.to_str() {
-                let ip = value.trim().to_string();
-                if !ip.is_empty() {
+                let ip_str = value.trim();
+                // Validate as IP address before trusting (RENDEZVOUS-HARDENING-1 P4).
+                if ip_str.parse::<std::net::IpAddr>().is_ok() {
                     if let Ok(mut lock) = forwarded_for_cb.lock() {
-                        *lock = Some(ip);
+                        *lock = Some(ip_str.to_string());
                     }
                     return Ok(resp);
                 }
+                // Invalid IP in Fly-Client-IP — log and fall through to XFF/socket
+                tracing::warn!("Fly-Client-IP contains invalid IP: {:?}", ip_str);
             }
         }
         // Fallback: X-Forwarded-For (standard reverse proxy header).
         if let Some(xff) = req.headers().get("x-forwarded-for") {
             if let Ok(value) = xff.to_str() {
                 // Take the first IP in a comma-separated list.
-                let client_ip = value.split(',').next().unwrap_or(value).trim().to_string();
+                let raw_ip = value.split(',').next().unwrap_or(value).trim();
+                // Validate as IP address (RENDEZVOUS-HARDENING-1 P4).
+                let client_ip = if raw_ip.parse::<std::net::IpAddr>().is_ok() {
+                    raw_ip.to_string()
+                } else {
+                    tracing::warn!("X-Forwarded-For contains invalid IP: {:?}", raw_ip);
+                    // Fall through — socket addr will be used
+                    return Ok(resp);
+                };
                 if let Ok(mut lock) = forwarded_for_cb.lock() {
                     *lock = Some(client_ip);
                 }
@@ -566,7 +577,8 @@ pub async fn handle_connection(
     // --- Cleanup ---
     // Pass session_id so remove_peer skips removal if this connection was
     // replaced by a newer session with the same peer_code (DP-5 race guard).
-    info!(peer_code = %peer_code, client_ip = %client_ip, session_id = session_id, "peer disconnected");
+    info!(peer_code = %peer_code, client_ip = %client_ip, "peer disconnected");
+    debug!(peer_code = %peer_code, session_id = session_id, "session details");
     room_manager.remove_peer(&client_ip, &peer_code, session_id);
     write_task.abort();
 }
