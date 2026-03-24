@@ -54,6 +54,12 @@ pub const RATE_LIMIT_PER_SECOND: u32 = 50;
 /// Consecutive rate-limit violations before forcibly closing the socket.
 pub const RATE_LIMIT_CLOSE_THRESHOLD: u32 = 3;
 
+/// Idle timeout for registered connections. If no message (of any type) is
+/// received within this duration, the connection is closed. Client Ping
+/// messages reset the timer. 5 minutes is generous for signaling — legitimate
+/// clients send periodic pings or signals well within this window.
+pub const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 // ── Validation Helpers (pure, testable) ─────────────────────────────────
 
 /// Reject messages exceeding `MAX_MESSAGE_BYTES`.
@@ -442,7 +448,15 @@ pub async fn handle_connection(
 
     // --- Message loop ---
     loop {
-        match ws_stream_rx.next().await {
+        let msg = tokio::time::timeout(IDLE_TIMEOUT, ws_stream_rx.next()).await;
+        let msg = match msg {
+            Ok(inner) => inner,
+            Err(_) => {
+                info!(peer_code = %peer_code, "idle timeout ({} sec) — closing", IDLE_TIMEOUT.as_secs());
+                break;
+            }
+        };
+        match msg {
             Some(Ok(Message::Text(text))) => {
                 // Rate limit check (post-registration).
                 match rate_limit.check() {
@@ -958,5 +972,36 @@ mod tests {
         let config = ws_config().expect("config should be Some");
         assert_eq!(config.max_message_size, Some(MAX_MESSAGE_BYTES));
         assert_eq!(config.max_frame_size, Some(MAX_MESSAGE_BYTES));
+    }
+
+    // ─── RENDEZVOUS-HARDENING-1 P2: Idle timeout ────────────────
+
+    #[test]
+    fn idle_timeout_constant_is_reasonable() {
+        // Timeout must be long enough for legitimate signaling gaps
+        // but short enough to reclaim idle connections.
+        assert!(IDLE_TIMEOUT.as_secs() >= 60, "idle timeout too short for signaling");
+        assert!(IDLE_TIMEOUT.as_secs() <= 600, "idle timeout too long for resource reclaim");
+        assert_eq!(IDLE_TIMEOUT.as_secs(), 300, "expected 5 minute idle timeout");
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_fires_on_no_activity() {
+        // Verify that tokio::time::timeout with our Duration works correctly.
+        // This tests the mechanism, not the full server integration.
+        use tokio::time::{timeout, Duration};
+
+        let short_timeout = Duration::from_millis(50);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+        // Don't send anything — timeout should fire
+        let result = timeout(short_timeout, rx.recv()).await;
+        assert!(result.is_err(), "timeout must fire when no message arrives");
+
+        // Send a message first — should NOT timeout
+        tx.send("ping".into()).unwrap();
+        let result = timeout(Duration::from_secs(1), rx.recv()).await;
+        assert!(result.is_ok(), "must not timeout when message arrives");
+        assert_eq!(result.unwrap(), Some("ping".into()));
     }
 }
