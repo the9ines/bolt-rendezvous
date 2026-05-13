@@ -330,7 +330,7 @@ pub async fn handle_connection(
 
     // --- Registration phase ---
     // The first message must be a "register" command.
-    let (peer_code, _device_name, _device_type) = loop {
+    let (peer_code, _device_name, _device_type, _wt_url, _wt_cert_hash) = loop {
         match ws_stream_rx.next().await {
             Some(Ok(Message::Text(text))) => {
                 // Rate limit check (pre-registration).
@@ -362,6 +362,8 @@ pub async fn handle_connection(
                         peer_code,
                         device_name,
                         device_type,
+                        wt_url,
+                        wt_cert_hash,
                     }) => {
                         // Validate device_name length.
                         if let Err(e) = validate_device_name(&device_name) {
@@ -369,7 +371,7 @@ pub async fn handle_connection(
                             let _ = tx.send(ServerMessage::Error { message: e });
                             continue;
                         }
-                        break (peer_code, device_name, device_type);
+                        break (peer_code, device_name, device_type, wt_url, wt_cert_hash);
                     }
                     Ok(_) => {
                         warn!(addr = %addr, "received non-register message before registration");
@@ -433,6 +435,8 @@ pub async fn handle_connection(
         device_type: _device_type,
         sender: tx.clone(),
         session_id: 0, // assigned by add_peer
+        wt_url: _wt_url,
+        wt_cert_hash: _wt_cert_hash,
     };
 
     let (existing_peers, session_id) = match room_manager.add_peer(&client_ip, peer_info) {

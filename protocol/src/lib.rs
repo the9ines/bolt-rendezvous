@@ -34,6 +34,12 @@ pub struct PeerData {
     pub peer_code: String,
     pub device_name: String,
     pub device_type: DeviceType,
+    /// WebTransport URL (e.g. "https://192.168.4.210:9948"). Optional — only desktop peers with WT enabled.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub wt_url: Option<String>,
+    /// WebTransport TLS certificate SHA-256 hash (hex). Required for browser serverCertificateHashes.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub wt_cert_hash: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -49,6 +55,10 @@ pub enum ClientMessage {
         peer_code: String,
         device_name: String,
         device_type: DeviceType,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        wt_url: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        wt_cert_hash: Option<String>,
     },
     /// Relay a WebRTC signaling payload to another peer.
     Signal {
@@ -148,6 +158,8 @@ mod tests {
                 peer_code: "ABC123".into(),
                 device_name: "MacBook".into(),
                 device_type: DeviceType::Laptop,
+                wt_url: None,
+                wt_cert_hash: None,
             }],
         };
         assert_wire_eq(
@@ -170,6 +182,8 @@ mod tests {
                 peer_code: "DEF456".into(),
                 device_name: "iPad".into(),
                 device_type: DeviceType::Tablet,
+                wt_url: None,
+                wt_cert_hash: None,
             },
         };
         assert_wire_eq(

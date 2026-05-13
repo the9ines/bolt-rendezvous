@@ -34,6 +34,10 @@ pub struct PeerInfo {
     /// Monotonic session ID assigned by `add_peer`. Used by `remove_peer` to
     /// avoid removing a replacement connection (DP-5 race guard).
     pub session_id: u64,
+    /// WebTransport URL (optional, desktop peers only).
+    pub wt_url: Option<String>,
+    /// WebTransport TLS cert hash (optional, desktop peers only).
+    pub wt_cert_hash: Option<String>,
 }
 
 impl PeerInfo {
@@ -43,6 +47,8 @@ impl PeerInfo {
             peer_code: self.peer_code.clone(),
             device_name: self.device_name.clone(),
             device_type: self.device_type.clone(),
+            wt_url: self.wt_url.clone(),
+            wt_cert_hash: self.wt_cert_hash.clone(),
         }
     }
 }
@@ -271,6 +277,8 @@ mod tests {
             device_type: DeviceType::Desktop,
             sender: tx,
             session_id: 0, // assigned by add_peer
+            wt_url: None,
+            wt_cert_hash: None,
         };
         (peer, rx)
     }
