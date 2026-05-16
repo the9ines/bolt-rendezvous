@@ -177,6 +177,7 @@ fn ws_config() -> Option<WebSocketConfig> {
 /// `trusted_proxies` controls X-Forwarded-For trust: only when the connecting
 /// socket address is in this list will the header be honored. Empty list means
 /// the header is always ignored (fail-closed).
+#[allow(clippy::result_large_err)]
 pub async fn handle_connection(
     mut stream: TcpStream,
     addr: SocketAddr,
