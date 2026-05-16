@@ -43,6 +43,19 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_manual_signal() {
+        let json = r#"{"type":"manual_signal","to":"XYZ789","payload":{"sdp":"..."}}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::ManualSignal { to, payload } => {
+                assert_eq!(to, "XYZ789");
+                assert!(payload.get("sdp").is_some());
+            }
+            _ => panic!("expected ManualSignal"),
+        }
+    }
+
+    #[test]
     fn serialize_peers() {
         let msg = ServerMessage::Peers {
             peers: vec![PeerData {

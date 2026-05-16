@@ -15,6 +15,14 @@ use crate::protocol::{DeviceType, PeerData, ServerMessage};
 /// Channel sender type used to push messages to a connected peer's WebSocket.
 pub type PeerSender = mpsc::UnboundedSender<ServerMessage>;
 
+/// Result for explicit manual peer-code lookup across rooms.
+#[derive(Debug, Clone)]
+pub enum ManualPeerLookup {
+    Found(PeerSender),
+    NotFound,
+    Ambiguous,
+}
+
 /// Monotonic session counter. Each `add_peer` call assigns a unique session ID
 /// so that `remove_peer` can distinguish the current connection from a stale one
 /// that was replaced (DP-5).
@@ -243,6 +251,33 @@ impl RoomManager {
         None
     }
 
+    /// Look up a peer's sender channel by exact peer code across all rooms for
+    /// explicit manual pairing.
+    ///
+    /// This is deliberately separate from [`find_peer`]. Automatic discovery
+    /// and normal signaling remain room-scoped; manual lookup is only for a user
+    /// entering a peer code. If a code exists in multiple rooms, the lookup is
+    /// rejected as ambiguous instead of guessing.
+    pub fn find_peer_manual(&self, peer_code: &str) -> ManualPeerLookup {
+        let mut found: Option<PeerSender> = None;
+
+        for room in self.rooms.iter() {
+            for peer in room.value().iter() {
+                if peer.peer_code == peer_code {
+                    if found.is_some() {
+                        return ManualPeerLookup::Ambiguous;
+                    }
+                    found = Some(peer.sender.clone());
+                }
+            }
+        }
+
+        match found {
+            Some(sender) => ManualPeerLookup::Found(sender),
+            None => ManualPeerLookup::NotFound,
+        }
+    }
+
     /// Return the total number of active rooms (unique IPs with at least one peer).
     pub fn room_count(&self) -> usize {
         self.rooms.len()
@@ -328,7 +363,10 @@ mod tests {
         let (_, session1) = rm.add_peer("10.0.0.1", p1).unwrap();
         // Second registration with same code replaces the first (reconnect).
         let (_, session2) = rm.add_peer("10.0.0.1", p2).unwrap();
-        assert!(session2 > session1, "session IDs must be monotonically increasing");
+        assert!(
+            session2 > session1,
+            "session IDs must be monotonically increasing"
+        );
 
         // Still only 1 peer in room (replaced, not duplicated).
         assert_eq!(rm.peer_count(), 1);
@@ -530,6 +568,45 @@ mod tests {
         assert!(rm.find_peer("10.0.0.1", "VICTIM").is_none());
     }
 
+    #[test]
+    fn find_peer_manual_finds_unique_cross_room_peer() {
+        let rm = RoomManager::new();
+        let (p1, _r1) = make_peer("ROOM1", "Room 1");
+        let (p2, _r2) = make_peer("MANUAL", "Room 2");
+
+        rm.add_peer("10.0.0.1", p1).unwrap();
+        rm.add_peer("10.0.0.2", p2).unwrap();
+
+        assert!(matches!(
+            rm.find_peer_manual("MANUAL"),
+            ManualPeerLookup::Found(_)
+        ));
+    }
+
+    #[test]
+    fn find_peer_manual_rejects_duplicate_codes_across_rooms() {
+        let rm = RoomManager::new();
+        let (p1, _r1) = make_peer("DUPMAN", "Room 1");
+        let (p2, _r2) = make_peer("DUPMAN", "Room 2");
+
+        rm.add_peer("10.0.0.1", p1).unwrap();
+        rm.add_peer("10.0.0.2", p2).unwrap();
+
+        assert!(matches!(
+            rm.find_peer_manual("DUPMAN"),
+            ManualPeerLookup::Ambiguous
+        ));
+    }
+
+    #[test]
+    fn find_peer_manual_returns_not_found_for_absent_code() {
+        let rm = RoomManager::new();
+        assert!(matches!(
+            rm.find_peer_manual("MISSING"),
+            ManualPeerLookup::NotFound
+        ));
+    }
+
     // ─── Concurrent edge simulation ─────────────────────────────────────
 
     #[test]
@@ -634,7 +711,10 @@ mod tests {
         // Next peer should be rejected
         let (peer, _rx) = make_peer("OVERFLOW", "overflow device");
         let result = rm.add_peer(ip, peer);
-        assert!(result.is_err(), "peer beyond MAX_PEERS_PER_ROOM must be rejected");
+        assert!(
+            result.is_err(),
+            "peer beyond MAX_PEERS_PER_ROOM must be rejected"
+        );
         assert!(result.unwrap_err().contains("room full"));
     }
 
@@ -664,7 +744,10 @@ mod tests {
 
         // Reconnect with existing code — should succeed (replaces stale, not new)
         let (peer, _rx) = make_peer("P0000", "reconnected device");
-        assert!(rm.add_peer(ip, peer).is_ok(), "reconnect must succeed even at capacity");
+        assert!(
+            rm.add_peer(ip, peer).is_ok(),
+            "reconnect must succeed even at capacity"
+        );
     }
 
     #[test]
@@ -704,7 +787,8 @@ mod tests {
         let batch = 50;
         for i in 0..batch {
             let (peer, _rx) = make_peer(&format!("B{i}"), "device");
-            rm.add_peer(&format!("1.1.{}.{}", i / 256, i % 256), peer).unwrap();
+            rm.add_peer(&format!("1.1.{}.{}", i / 256, i % 256), peer)
+                .unwrap();
         }
         assert_eq!(rm.rooms.len(), batch);
 

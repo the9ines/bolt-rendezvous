@@ -9,7 +9,7 @@
 //! # Wire Format
 //!
 //! Client-to-server messages use `snake_case` type tags:
-//! - `register`, `signal`, `ping`
+//! - `register`, `signal`, `manual_signal`, `ping`
 //!
 //! Server-to-client messages use `snake_case` type tags:
 //! - `peers`, `peer_joined`, `peer_left`, `signal`, `error`
@@ -61,7 +61,16 @@ pub enum ClientMessage {
         wt_cert_hash: Option<String>,
     },
     /// Relay a WebRTC signaling payload to another peer.
+    ///
+    /// This path is room-scoped: the target must be in the sender's effective-IP
+    /// room.
     Signal {
+        to: String,
+        payload: serde_json::Value,
+    },
+    /// Relay a WebRTC signaling payload to an exact peer code for explicit
+    /// manual pairing. This does not add the peer to automatic discovery.
+    ManualSignal {
         to: String,
         payload: serde_json::Value,
     },
@@ -137,6 +146,22 @@ mod tests {
             &msg,
             json!({
                 "type": "signal",
+                "to": "XYZ789",
+                "payload": {"sdp": "offer-data"}
+            }),
+        );
+    }
+
+    #[test]
+    fn wire_client_manual_signal() {
+        let msg = ClientMessage::ManualSignal {
+            to: "XYZ789".into(),
+            payload: json!({"sdp": "offer-data"}),
+        };
+        assert_wire_eq(
+            &msg,
+            json!({
+                "type": "manual_signal",
                 "to": "XYZ789",
                 "payload": {"sdp": "offer-data"}
             }),
@@ -254,6 +279,7 @@ mod tests {
                 peer_code,
                 device_name,
                 device_type,
+                ..
             } => {
                 assert_eq!(peer_code, "ABC123");
                 assert_eq!(device_name, "iPhone 15");
@@ -273,6 +299,19 @@ mod tests {
                 assert!(payload.get("sdp").is_some());
             }
             _ => panic!("expected Signal"),
+        }
+    }
+
+    #[test]
+    fn deserialize_client_manual_signal() {
+        let json = r#"{"type":"manual_signal","to":"XYZ789","payload":{"sdp":"..."}}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::ManualSignal { to, payload } => {
+                assert_eq!(to, "XYZ789");
+                assert!(payload.get("sdp").is_some());
+            }
+            _ => panic!("expected ManualSignal"),
         }
     }
 
@@ -349,6 +388,8 @@ mod tests {
             peer_code: "ABC".into(),
             device_name: "Test".into(),
             device_type: DeviceType::Desktop,
+            wt_url: None,
+            wt_cert_hash: None,
         };
         let cloned = msg.clone();
         let orig_val = serde_json::to_value(&msg).unwrap();

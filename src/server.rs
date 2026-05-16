@@ -34,7 +34,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
 use crate::protocol::{ClientMessage, ServerMessage};
-use crate::room::{PeerInfo, RoomManager};
+use crate::room::{ManualPeerLookup, PeerInfo, RoomManager};
 
 // ── Trust Boundary Constants ────────────────────────────────────────────
 
@@ -271,10 +271,7 @@ pub async fn handle_connection(
     // Fly-Client-IP is extracted with a `was_fly` flag so we can trust it unconditionally
     // (Fly strips any client-sent Fly-Client-IP — it's infrastructure-only).
     // X-Forwarded-For is only trusted from explicitly configured proxies.
-    let forwarded_ip = forwarded_for
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone());
+    let forwarded_ip = forwarded_for.lock().ok().and_then(|guard| guard.clone());
 
     let raw_ip = if let Some(ref ip) = forwarded_ip {
         if trusted_proxies.contains(&addr.ip()) {
@@ -531,6 +528,57 @@ pub async fn handle_connection(
                                 message: format!("peer '{to}' not found"),
                             };
                             let _ = tx.send(err);
+                        }
+                    }
+                    Ok(ClientMessage::ManualSignal { to, payload }) => {
+                        // Explicit manual pairing path. Automatic discovery and
+                        // normal signal routing remain room-scoped.
+                        let to = match validate_signal_target(&to) {
+                            Ok(normalized) => normalized,
+                            Err(e) => {
+                                warn!(from = %peer_code, error = %e, "invalid manual signal target");
+                                let _ = tx.send(ServerMessage::Error { message: e });
+                                continue;
+                            }
+                        };
+
+                        info!(from = %peer_code, to = %to, "manual signal relay");
+                        match room_manager.find_peer_manual(&to) {
+                            ManualPeerLookup::Found(target_sender) => {
+                                let relay_msg = ServerMessage::Signal {
+                                    from: peer_code.clone(),
+                                    payload,
+                                };
+                                if target_sender.send(relay_msg).is_err() {
+                                    warn!(
+                                        from = %peer_code,
+                                        to = %to,
+                                        "manual target peer channel closed"
+                                    );
+                                    let err = ServerMessage::Error {
+                                        message: format!("peer '{to}' is no longer connected"),
+                                    };
+                                    let _ = tx.send(err);
+                                }
+                            }
+                            ManualPeerLookup::Ambiguous => {
+                                warn!(
+                                    from = %peer_code,
+                                    to = %to,
+                                    "manual signal target is ambiguous"
+                                );
+                                let err = ServerMessage::Error {
+                                    message: format!("peer '{to}' is ambiguous"),
+                                };
+                                let _ = tx.send(err);
+                            }
+                            ManualPeerLookup::NotFound => {
+                                debug!(from = %peer_code, to = %to, "manual target peer not found");
+                                let err = ServerMessage::Error {
+                                    message: format!("peer '{to}' not found"),
+                                };
+                                let _ = tx.send(err);
+                            }
                         }
                     }
                     Ok(ClientMessage::Ping) => {
@@ -816,9 +864,15 @@ mod tests {
     fn peer_code_error_prefix() {
         // All errors should carry the invalid_peer_code prefix for client matching.
         let err = validate_peer_code("").unwrap_err();
-        assert!(err.starts_with("invalid_peer_code:"), "missing prefix: {err}");
+        assert!(
+            err.starts_with("invalid_peer_code:"),
+            "missing prefix: {err}"
+        );
         let err = validate_peer_code("AB!C").unwrap_err();
-        assert!(err.starts_with("invalid_peer_code:"), "missing prefix: {err}");
+        assert!(
+            err.starts_with("invalid_peer_code:"),
+            "missing prefix: {err}"
+        );
     }
 
     // ── RateLimit ───────────────────────────────────────────────
@@ -996,9 +1050,19 @@ mod tests {
     fn idle_timeout_constant_is_reasonable() {
         // Timeout must be long enough for legitimate signaling gaps
         // but short enough to reclaim idle connections.
-        assert!(IDLE_TIMEOUT.as_secs() >= 60, "idle timeout too short for signaling");
-        assert!(IDLE_TIMEOUT.as_secs() <= 600, "idle timeout too long for resource reclaim");
-        assert_eq!(IDLE_TIMEOUT.as_secs(), 300, "expected 5 minute idle timeout");
+        assert!(
+            IDLE_TIMEOUT.as_secs() >= 60,
+            "idle timeout too short for signaling"
+        );
+        assert!(
+            IDLE_TIMEOUT.as_secs() <= 600,
+            "idle timeout too long for resource reclaim"
+        );
+        assert_eq!(
+            IDLE_TIMEOUT.as_secs(),
+            300,
+            "expected 5 minute idle timeout"
+        );
     }
 
     #[tokio::test]
