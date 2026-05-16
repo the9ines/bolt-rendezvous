@@ -9,6 +9,7 @@ Current state of the bolt-rendezvous repository.
 **Branch:** `main`
 **Crate:** `bolt-rendezvous` v0.1.1
 **Subcrate:** `bolt-rendezvous-protocol` v0.1.0
+**Hosted endpoint:** `wss://bolt-rendezvous.fly.dev` (Fly.io app `bolt-rendezvous`)
 
 ## Purpose
 
@@ -28,6 +29,7 @@ messages between them.
 | Trust boundary enforcement | **Complete** (Phase 6A.4) |
 | Docker packaging | **Complete** (SIG-2A — multi-stage Dockerfile) |
 | Env-based profiles | **Complete** (SIG-2A — BOLT_SIGNAL_PROFILE local/internet) |
+| Fly.io deployment config | **Complete** (`fly.toml`, app `bolt-rendezvous`, internet profile) |
 
 ## Configuration
 
